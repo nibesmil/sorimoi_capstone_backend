@@ -1,2 +1,2 @@
-# sorimoi_capstone_backend
+# sorimoi_capstone
 2025 호서대학교 컴퓨터공학부 졸업프로젝트

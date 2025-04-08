@@ -9,7 +9,7 @@ import os
 
 load_dotenv() #env 파일 불러오기
 
-# ✅ MySQL 접속 정보 설정 (비밀번호 등 본인 환경에 맞게 수정)
+# ✅ MySQL 접속 정보 설정
 db_config = {
     "host": os.getenv("DB_HOST"),
     "user": os.getenv("DB_USER"),
@@ -18,7 +18,7 @@ db_config = {
     "port": 3306
 }
 
-# 🎯 음성 인식된 텍스트를 MySQL에 저장하는 함수
+# 🎯 음성 인식 텍스트 MySQL에 저장
 def save_to_mysql(text, username):
     conn = None
     cursor = None
@@ -40,7 +40,7 @@ def save_to_mysql(text, username):
             conn.close()
 
 
-# 🎤 Google Speech-to-Text 클라이언트
+# 🎤 구글 STT
 client = speech.SpeechClient()
 
 # 오디오 설정
@@ -98,7 +98,7 @@ def recognize_stream():
                 if result.is_final:
                     recognized_text = result.alternatives[0].transcript.strip()
                     print("🎤 인식 텍스트 :", recognized_text)
-                    save_to_mysql(recognized_text, "test")  # 🔥 여기서 MySQL 저장
+                    save_to_mysql(recognized_text, "test") #MySQL 저장, test는 임시사용자명
                 if not is_listening:
                     return
     except Exception as e:
@@ -142,6 +142,6 @@ if __name__ == "__main__":
     keyboard.on_press_key("q", quit_program)
 
     try:
-        keyboard.wait()  # pass 대신 CPU 사용 줄이기
+        keyboard.wait()
     except KeyboardInterrupt:
         quit_program()

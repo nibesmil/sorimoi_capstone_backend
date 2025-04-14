@@ -1,7 +1,6 @@
 import pyaudio
 import queue
 import threading
-import keyboard
 import datetime
 import os
 from google.cloud import speech
@@ -20,22 +19,25 @@ db_config = {
     "port": 3306
 }
 
-# AWS 접속 정보 설정
+# AWS 접속 정보
 AWS_HOST = os.getenv("AWS_HOST")
 AWS_USER = os.getenv("AWS_USER")
 AWS_PASSWORD = os.getenv("AWS_PASSWORD")
 REMOTE_DIR = "/home/ec2-user/recogaudio/"
 
-# Google Speech-to-text API 
+# 음성 인식 설정
 client = speech.SpeechClient()
 RATE = 16000
 CHUNK = int(RATE / 10)
+
+# 상태 변수
 audio_queue = queue.Queue()
 is_listening = False
 stream = None
 p = None
+last_recognized_text = ""
 
-# 마이쿼리 저장
+
 def save_to_mysql(text, username):
     try:
         conn = mysql.connector.connect(**db_config)
@@ -45,17 +47,17 @@ def save_to_mysql(text, username):
         conn.commit()
         print("💾 저장됨:", text)
     except mysql.connector.Error as err:
-        print("❌ 마이쿼리 저장 에러 ❌ :", err)
+        print("❌ MySQL 저장 오류:", err)
     finally:
         if cursor:
             cursor.close()
         if conn:
             conn.close()
 
-# ec2 서버에 업로드
+
 def upload_to_aws(filename, audio_data):
     try:
-        temp_dir = "/tmp" #임시 업로드 파일이라 로컬엔 저장 X
+        temp_dir = "/tmp"
         if not os.path.exists(temp_dir):
             os.makedirs(temp_dir)
 
@@ -70,22 +72,22 @@ def upload_to_aws(filename, audio_data):
         sftp = ssh.open_sftp()
         remote_path = os.path.join(REMOTE_DIR, filename)
         sftp.put(local_path, remote_path)
-        print(f"🚀 음성 파일 업로드 성공 ! : {remote_path}")
+        print(f"🚀 업로드 성공: {remote_path}")
 
         sftp.close()
         ssh.close()
-        os.remove(local_path)  # 로컬 파일 삭제
+        os.remove(local_path)
     except Exception as e:
-        print("❌ EC2 업로드 실패 ! :", e)
+        print("❌ AWS 업로드 실패:", e)
 
-# 오디오 콜백
+
 def callback(in_data, frame_count, time_info, status):
     audio_queue.put(in_data)
     return None, pyaudio.paContinue
 
-# 음성 인식
+
 def recognize_stream():
-    global is_listening, stream, p
+    global is_listening, stream, p, last_recognized_text
 
     p = pyaudio.PyAudio()
     stream = p.open(
@@ -97,7 +99,7 @@ def recognize_stream():
         stream_callback=callback
     )
 
-    print("🎤 음성 인식을 시작합니다.")
+    print("🎤 인식 중...")
 
     def generator():
         while is_listening:
@@ -109,7 +111,7 @@ def recognize_stream():
     config = speech.RecognitionConfig(
         encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
         sample_rate_hertz=RATE,
-        language_code="en-US" #영어 발음만 할 수 있음. 한국어 발음 원할 시 ko-KR
+        language_code="en-US"  # 언어 설정
     )
     streaming_config = speech.StreamingRecognitionConfig(
         config=config,
@@ -123,10 +125,10 @@ def recognize_stream():
             for result in response.results:
                 if result.is_final:
                     recognized_text = result.alternatives[0].transcript.strip()
-                    print("🎤 결과 텍스트:", recognized_text)
+                    print("🎤 인식 결과:", recognized_text)
+                    last_recognized_text = recognized_text
                     save_to_mysql(recognized_text, "test")
 
-                    # 오디오 저장 후 EC2 업로드
                     now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                     filename = f"voice_{now}.wav"
                     audio_data = b"".join(list(audio_queue.queue))
@@ -135,28 +137,20 @@ def recognize_stream():
                 if not is_listening:
                     return
     except Exception as e:
-        print("❌ 오류 발생:", e)
+        print("❌ 오류:", e)
 
-# 시작/종료 토글
-def toggle_recognition(event=None):
-    global is_listening, stream, p
+
+# 🔹 외부 제어용 API 함수
+def start_recognition():
+    global is_listening
     if not is_listening:
         is_listening = True
         threading.Thread(target=recognize_stream, daemon=True).start()
-    else:
-        is_listening = False
-        audio_queue.put(None)
-        if stream:
-            stream.stop_stream()
-            stream.close()
-        if p:
-            p.terminate()
-        print("🛑 음성 인식을 종료합니다. ")
+        print("🟢 인식 시작됨")
 
-# 종료
-def quit_program(event=None):
+
+def stop_recognition():
     global is_listening, stream, p
-    print("👋 프로그램을 종료합니다. ")
     if is_listening:
         is_listening = False
         audio_queue.put(None)
@@ -165,16 +159,8 @@ def quit_program(event=None):
             stream.close()
         if p:
             p.terminate()
-    exit(0)
+        print("🔴 인식 종료됨")
 
-# 실행
-if __name__ == "__main__":
-    print("✅ 'S' 키 → 음성 인식 시작/종료\n✅ 'Q' 키 → 프로그램 종료")
 
-    keyboard.on_press_key("s", toggle_recognition)
-    keyboard.on_press_key("q", quit_program)
-
-    try:
-        keyboard.wait()
-    except KeyboardInterrupt:
-        quit_program()
+def get_last_result():
+    return last_recognized_text

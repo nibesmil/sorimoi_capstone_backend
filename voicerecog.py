@@ -3,6 +3,7 @@ import queue
 import threading
 import datetime
 import os
+import wave
 from google.cloud import speech
 import mysql.connector
 from dotenv import load_dotenv
@@ -32,11 +33,11 @@ CHUNK = int(RATE / 10)
 
 # 상태 변수
 audio_queue = queue.Queue()
+recorded_frames = []  # 🔥 녹음 데이터 저장용
 is_listening = False
 stream = None
 p = None
 last_recognized_text = ""
-
 
 def save_to_mysql(text, username):
     try:
@@ -54,17 +55,24 @@ def save_to_mysql(text, username):
         if conn:
             conn.close()
 
+def save_wav(filename, frames):
+    """녹음된 데이터로 정상적인 WAV 파일 저장"""
+    temp_dir = "/tmp"
+    if not os.path.exists(temp_dir):
+        os.makedirs(temp_dir)
 
-def upload_to_aws(filename, audio_data):
+    local_path = os.path.join(temp_dir, filename)
+
+    with wave.open(local_path, 'wb') as wf:
+        wf.setnchannels(1)  # Mono
+        wf.setsampwidth(p.get_sample_size(pyaudio.paInt16))  # 샘플 사이즈: 2바이트
+        wf.setframerate(RATE)  # 샘플링 레이트
+        wf.writeframes(b''.join(frames))  # 데이터 기록
+
+    return local_path
+
+def upload_to_aws(local_path, filename):
     try:
-        temp_dir = "/tmp"
-        if not os.path.exists(temp_dir):
-            os.makedirs(temp_dir)
-
-        local_path = os.path.join(temp_dir, filename)
-        with open(local_path, "wb") as f:
-            f.write(audio_data)
-
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         ssh.connect(hostname=AWS_HOST, username=AWS_USER, password=AWS_PASSWORD)
@@ -80,14 +88,13 @@ def upload_to_aws(filename, audio_data):
     except Exception as e:
         print("❌ AWS 업로드 실패:", e)
 
-
 def callback(in_data, frame_count, time_info, status):
     audio_queue.put(in_data)
+    recorded_frames.append(in_data)  # 🔥 녹음 데이터 따로 모음
     return None, pyaudio.paContinue
 
-
 def recognize_stream():
-    global is_listening, stream, p, last_recognized_text
+    global is_listening, stream, p, last_recognized_text, recorded_frames
 
     p = pyaudio.PyAudio()
     stream = p.open(
@@ -131,14 +138,20 @@ def recognize_stream():
 
                     now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                     filename = f"voice_{now}.wav"
-                    audio_data = b"".join(list(audio_queue.queue))
-                    upload_to_aws(filename, audio_data)
+
+                    # 🔥 녹음 데이터 WAV로 저장
+                    local_path = save_wav(filename, recorded_frames)
+
+                    # 🔥 저장한 파일 AWS로 업로드
+                    upload_to_aws(local_path, filename)
+
+                    # 🔥 frames 초기화
+                    recorded_frames = []
 
                 if not is_listening:
                     return
     except Exception as e:
         print("❌ 오류:", e)
-
 
 # 🔹 외부 제어용 API 함수
 def start_recognition():
@@ -147,7 +160,6 @@ def start_recognition():
         is_listening = True
         threading.Thread(target=recognize_stream, daemon=True).start()
         print("🟢 인식 시작됨")
-
 
 def stop_recognition():
     global is_listening, stream, p
@@ -160,7 +172,6 @@ def stop_recognition():
         if p:
             p.terminate()
         print("🔴 인식 종료됨")
-
 
 def get_last_result():
     return last_recognized_text

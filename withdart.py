@@ -28,6 +28,12 @@ def get_result():
 def get_status():
     return jsonify({"is_listening": voicerecog.is_listening})
 
+@app.route('/feedback', methods=['GET'])
+def get_feedback():
+    # 🔥 voicerecog에서 피드백 메시지를 가져옴
+    message = getattr(voicerecog, 'last_feedback_message', "")
+    return jsonify({"message": message})
+
 if __name__ == '__main__':
     print("🚀 Flask 음성 인식 서버 실행 중... (http://0.0.0.0:5000)")
     app.run(host='0.0.0.0', port=5000)

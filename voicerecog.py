@@ -27,7 +27,6 @@ AWS_USER = os.getenv("AWS_USER")
 AWS_PASSWORD = os.getenv("AWS_PASSWORD")
 REMOTE_DIR = "/home/ec2-user/recogaudio/"
 
-# 음성 인식 설정
 client = speech.SpeechClient()
 RATE = 16000
 CHUNK = int(RATE / 10)
@@ -39,9 +38,9 @@ is_listening = False
 stream = None
 p = None
 last_recognized_text = ""
-last_feedback_message = ""  # 🔥 피드백 메시지 변수 추가
+last_feedback_message = ""
+recognized_text_list = []  # 🔥 인식 결과 누적 리스트
 
-# 볼륨 임계값
 VOLUME_THRESHOLD = 0.01
 
 def save_to_mysql(text):
@@ -60,7 +59,7 @@ def save_to_mysql(text):
             "TESTDATA"
         ))
         conn.commit()
-        print("💾 저장 완료:", text)
+        print("💾 MYSQL 저장 완료:", text)
     except mysql.connector.Error as err:
         print("❌ MySQL 저장 오류:", err)
     finally:
@@ -105,6 +104,7 @@ def callback(in_data, frame_count, time_info, status):
     global last_feedback_message
     audio_data = np.frombuffer(in_data, dtype=np.int16)
     volume_norm = np.linalg.norm(audio_data) / len(audio_data)
+
     if volume_norm <= 0.02:
         last_feedback_message = "목소리가 너무 작아요."
     elif volume_norm >= 0.3:
@@ -117,10 +117,8 @@ def callback(in_data, frame_count, time_info, status):
         recorded_frames.append(in_data)
     return None, pyaudio.paContinue
 
-
-
 def recognize_stream():
-    global is_listening, stream, p, last_recognized_text, recorded_frames
+    global is_listening, stream, p, last_recognized_text, recorded_frames, recognized_text_list
 
     p = pyaudio.PyAudio()
     stream = p.open(
@@ -159,12 +157,11 @@ def recognize_stream():
                 if result.is_final:
                     recognized_text = result.alternatives[0].transcript.strip()
                     if not recognized_text:
-                        print("⚠️ 빈 텍스트, 저장 건너뜀")
                         recorded_frames = []
                         continue
 
-                    print("🎤 인식 결과:", recognized_text)
                     last_recognized_text = recognized_text
+                    recognized_text_list.append(recognized_text)  # 🔥 누적
                     save_to_mysql(recognized_text)
 
                     now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -179,7 +176,6 @@ def recognize_stream():
     except Exception as e:
         print("❌ 오류:", e)
 
-# 🔹 외부 제어용 API 함수
 def start_recognition():
     global is_listening
     if not is_listening:
@@ -200,4 +196,8 @@ def stop_recognition():
         print("🔴 인식 종료됨")
 
 def get_last_result():
-    return last_recognized_text
+    return '\n'.join(recognized_text_list)  # 🔥 누적된 결과 반환
+
+def clear_results():
+    global recognized_text_list
+    recognized_text_list = []  # 🔥 리스트 초기화

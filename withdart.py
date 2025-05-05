@@ -3,7 +3,7 @@ from flask_cors import CORS
 import voicerecog
 
 app = Flask(__name__)
-CORS(app)  # Flutter에서 호출할 수 있도록 CORS 허용
+CORS(app)
 
 @app.route('/start', methods=['POST'])
 def start_recognition():
@@ -21,8 +21,7 @@ def stop_recognition():
 
 @app.route('/result', methods=['GET'])
 def get_result():
-    result = voicerecog.get_last_result()
-    return jsonify({"text": result})
+    return jsonify({"texts": voicerecog.recognized_text_list})
 
 @app.route('/status', methods=['GET'])
 def get_status():
@@ -30,9 +29,13 @@ def get_status():
 
 @app.route('/feedback', methods=['GET'])
 def get_feedback():
-    # 🔥 voicerecog에서 피드백 메시지를 가져옴
     message = getattr(voicerecog, 'last_feedback_message', "")
     return jsonify({"message": message})
+
+@app.route('/clear', methods=['POST'])
+def clear_result():
+    voicerecog.clear_results()
+    return jsonify({"status": "cleared"})
 
 if __name__ == '__main__':
     print("🚀 Flask 음성 인식 서버 실행 중... (http://0.0.0.0:5000)")

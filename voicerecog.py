@@ -4,6 +4,7 @@ import threading
 import datetime
 import os
 import wave
+import numpy as np
 from google.cloud import speech
 import mysql.connector
 from dotenv import load_dotenv
@@ -33,20 +34,33 @@ CHUNK = int(RATE / 10)
 
 # 상태 변수
 audio_queue = queue.Queue()
-recorded_frames = []  # 🔥 녹음 데이터 저장용
+recorded_frames = []
 is_listening = False
 stream = None
 p = None
 last_recognized_text = ""
+last_feedback_message = ""  # 🔥 피드백 메시지 변수 추가
 
-def save_to_mysql(text, username):
+# 볼륨 임계값
+VOLUME_THRESHOLD = 0.01
+
+def save_to_mysql(text):
     try:
         conn = mysql.connector.connect(**db_config)
         cursor = conn.cursor()
-        query = "INSERT INTO stt_info (content, username) VALUES (%s, %s)"
-        cursor.execute(query, (text, username))
+        query = """
+            INSERT INTO stt_info (contents, date, score, star, title)
+            VALUES (%s, %s, %s, %s, %s)
+        """
+        cursor.execute(query, (
+            text,
+            datetime.datetime.now(),
+            0,
+            0,
+            "TESTDATA"
+        ))
         conn.commit()
-        print("💾 저장됨:", text)
+        print("💾 저장 완료:", text)
     except mysql.connector.Error as err:
         print("❌ MySQL 저장 오류:", err)
     finally:
@@ -56,7 +70,6 @@ def save_to_mysql(text, username):
             conn.close()
 
 def save_wav(filename, frames):
-    """녹음된 데이터로 정상적인 WAV 파일 저장"""
     temp_dir = "/tmp"
     if not os.path.exists(temp_dir):
         os.makedirs(temp_dir)
@@ -64,10 +77,10 @@ def save_wav(filename, frames):
     local_path = os.path.join(temp_dir, filename)
 
     with wave.open(local_path, 'wb') as wf:
-        wf.setnchannels(1)  # Mono
-        wf.setsampwidth(p.get_sample_size(pyaudio.paInt16))  # 샘플 사이즈: 2바이트
-        wf.setframerate(RATE)  # 샘플링 레이트
-        wf.writeframes(b''.join(frames))  # 데이터 기록
+        wf.setnchannels(1)
+        wf.setsampwidth(p.get_sample_size(pyaudio.paInt16))
+        wf.setframerate(RATE)
+        wf.writeframes(b''.join(frames))
 
     return local_path
 
@@ -89,9 +102,22 @@ def upload_to_aws(local_path, filename):
         print("❌ AWS 업로드 실패:", e)
 
 def callback(in_data, frame_count, time_info, status):
-    audio_queue.put(in_data)
-    recorded_frames.append(in_data)  # 🔥 녹음 데이터 따로 모음
+    global last_feedback_message
+    audio_data = np.frombuffer(in_data, dtype=np.int16)
+    volume_norm = np.linalg.norm(audio_data) / len(audio_data)
+    if volume_norm <= 0.02:
+        last_feedback_message = "목소리가 너무 작아요."
+    elif volume_norm >= 0.3:
+        last_feedback_message = "목소리가 너무 커요."
+    else:
+        last_feedback_message = "Good! 잘 하고 있어요."
+
+    if volume_norm > VOLUME_THRESHOLD:
+        audio_queue.put(in_data)
+        recorded_frames.append(in_data)
     return None, pyaudio.paContinue
+
+
 
 def recognize_stream():
     global is_listening, stream, p, last_recognized_text, recorded_frames
@@ -118,7 +144,7 @@ def recognize_stream():
     config = speech.RecognitionConfig(
         encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
         sample_rate_hertz=RATE,
-        language_code="en-US"  # 언어 설정
+        language_code="en-US"
     )
     streaming_config = speech.StreamingRecognitionConfig(
         config=config,
@@ -132,22 +158,22 @@ def recognize_stream():
             for result in response.results:
                 if result.is_final:
                     recognized_text = result.alternatives[0].transcript.strip()
+                    if not recognized_text:
+                        print("⚠️ 빈 텍스트, 저장 건너뜀")
+                        recorded_frames = []
+                        continue
+
                     print("🎤 인식 결과:", recognized_text)
                     last_recognized_text = recognized_text
-                    save_to_mysql(recognized_text, "test")
+                    save_to_mysql(recognized_text)
 
                     now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                     filename = f"voice_{now}.wav"
 
-                    # 🔥 녹음 데이터 WAV로 저장
                     local_path = save_wav(filename, recorded_frames)
-
-                    # 🔥 저장한 파일 AWS로 업로드
                     upload_to_aws(local_path, filename)
 
-                    # 🔥 frames 초기화
                     recorded_frames = []
-
                 if not is_listening:
                     return
     except Exception as e:

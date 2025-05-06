@@ -30,7 +30,7 @@ def get_status():
 @app.route('/feedback', methods=['GET'])
 def get_feedback():
     message = getattr(voicerecog, 'last_feedback_message', "")
-    return jsonify({"message": message})
+    return jsonify({"feedback": message}) 
 
 @app.route('/clear', methods=['POST'])
 def clear_result():

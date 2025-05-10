@@ -39,7 +39,8 @@ stream = None
 p = None
 last_recognized_text = ""
 last_feedback_message = ""
-recognized_text_list = []  # 🔥 인식 결과 누적 리스트
+recognized_text_list = []      # 🔥 인식 결과 누적
+recognized_filenames = []      # 🔥 파일명 누적
 
 VOLUME_THRESHOLD = 0.01
 
@@ -63,24 +64,18 @@ def save_to_mysql(text):
     except mysql.connector.Error as err:
         print("❌ MySQL 저장 오류:", err)
     finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
+        if cursor: cursor.close()
+        if conn:   conn.close()
 
 def save_wav(filename, frames):
     temp_dir = "/tmp"
-    if not os.path.exists(temp_dir):
-        os.makedirs(temp_dir)
-
+    os.makedirs(temp_dir, exist_ok=True)
     local_path = os.path.join(temp_dir, filename)
-
     with wave.open(local_path, 'wb') as wf:
         wf.setnchannels(1)
         wf.setsampwidth(p.get_sample_size(pyaudio.paInt16))
         wf.setframerate(RATE)
         wf.writeframes(b''.join(frames))
-
     return local_path
 
 def upload_to_aws(local_path, filename):
@@ -88,12 +83,10 @@ def upload_to_aws(local_path, filename):
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         ssh.connect(hostname=AWS_HOST, username=AWS_USER, password=AWS_PASSWORD)
-
         sftp = ssh.open_sftp()
         remote_path = os.path.join(REMOTE_DIR, filename)
         sftp.put(local_path, remote_path)
         print(f"🚀 업로드 성공: {remote_path}")
-
         sftp.close()
         ssh.close()
         os.remove(local_path)
@@ -118,8 +111,7 @@ def callback(in_data, frame_count, time_info, status):
     return None, pyaudio.paContinue
 
 def recognize_stream():
-    global is_listening, stream, p, last_recognized_text, recorded_frames, recognized_text_list
-
+    global is_listening, stream, p, last_recognized_text
     p = pyaudio.PyAudio()
     stream = p.open(
         format=pyaudio.paInt16,
@@ -129,7 +121,6 @@ def recognize_stream():
         frames_per_buffer=CHUNK,
         stream_callback=callback
     )
-
     print("🎤 인식 중...")
 
     def generator():
@@ -148,7 +139,6 @@ def recognize_stream():
         config=config,
         interim_results=False
     )
-
     responses = client.streaming_recognize(streaming_config, generator())
 
     try:
@@ -157,20 +147,22 @@ def recognize_stream():
                 if result.is_final:
                     recognized_text = result.alternatives[0].transcript.strip()
                     if not recognized_text:
-                        recorded_frames = []
+                        recorded_frames.clear()
                         continue
 
                     last_recognized_text = recognized_text
-                    recognized_text_list.append(recognized_text)  # 🔥 누적
-                    save_to_mysql(recognized_text)
+                    recognized_text_list.append(recognized_text)
 
                     now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                     filename = f"voice_{now}.wav"
+                    recognized_filenames.append(filename)
 
+                    save_to_mysql(recognized_text)
                     local_path = save_wav(filename, recorded_frames)
                     upload_to_aws(local_path, filename)
 
-                    recorded_frames = []
+                    recorded_frames.clear()
+
                 if not is_listening:
                     return
     except Exception as e:
@@ -196,8 +188,9 @@ def stop_recognition():
         print("🔴 인식 종료됨")
 
 def get_last_result():
-    return '\n'.join(recognized_text_list)  # 🔥 누적된 결과 반환
+    return '\n'.join(recognized_text_list)
 
 def clear_results():
-    global recognized_text_list
-    recognized_text_list = []  # 🔥 리스트 초기화
+    global recognized_text_list, recognized_filenames
+    recognized_text_list.clear()
+    recognized_filenames.clear()

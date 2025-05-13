@@ -1,3 +1,5 @@
+# voicerecog.py
+
 import pyaudio
 import queue
 import threading
@@ -25,7 +27,7 @@ db_config = {
 AWS_HOST = os.getenv("AWS_HOST")
 AWS_USER = os.getenv("AWS_USER")
 AWS_PASSWORD = os.getenv("AWS_PASSWORD")
-REMOTE_DIR = "/home/ec2-user/recogaudio/"
+REMOTE_DIR = "/home/ec2-user/voiceapi/recogaudio/"
 
 client = speech.SpeechClient()
 RATE = 16000
@@ -37,14 +39,13 @@ recorded_frames = []
 is_listening = False
 stream = None
 p = None
-last_recognized_text = ""
 last_feedback_message = ""
-recognized_text_list = []      # 🔥 인식 결과 누적
-recognized_filenames = []      # 🔥 파일명 누적
+recognized_text_list = []
+recognized_filenames = []
 
 VOLUME_THRESHOLD = 0.01
 
-def save_to_mysql(text):
+def save_to_mysql(text, filename):
     try:
         conn = mysql.connector.connect(**db_config)
         cursor = conn.cursor()
@@ -57,15 +58,15 @@ def save_to_mysql(text):
             datetime.datetime.now(),
             0,
             0,
-            "TESTDATA"
+            filename
         ))
         conn.commit()
-        print("💾 MYSQL 저장 완료:", text)
+        print("\U0001F4CC MYSQL 저장 완료:", text, filename)
     except mysql.connector.Error as err:
         print("❌ MySQL 저장 오류:", err)
     finally:
         if cursor: cursor.close()
-        if conn:   conn.close()
+        if conn: conn.close()
 
 def save_wav(filename, frames):
     temp_dir = "/tmp"
@@ -86,7 +87,7 @@ def upload_to_aws(local_path, filename):
         sftp = ssh.open_sftp()
         remote_path = os.path.join(REMOTE_DIR, filename)
         sftp.put(local_path, remote_path)
-        print(f"🚀 업로드 성공: {remote_path}")
+        print(f"\U0001F680 업로드 성공: {remote_path}")
         sftp.close()
         ssh.close()
         os.remove(local_path)
@@ -111,7 +112,7 @@ def callback(in_data, frame_count, time_info, status):
     return None, pyaudio.paContinue
 
 def recognize_stream():
-    global is_listening, stream, p, last_recognized_text
+    global is_listening, stream, p
     p = pyaudio.PyAudio()
     stream = p.open(
         format=pyaudio.paInt16,
@@ -121,7 +122,7 @@ def recognize_stream():
         frames_per_buffer=CHUNK,
         stream_callback=callback
     )
-    print("🎤 인식 중...")
+    print("\U0001F3A4 인식 중...")
 
     def generator():
         while is_listening:
@@ -150,16 +151,18 @@ def recognize_stream():
                         recorded_frames.clear()
                         continue
 
-                    last_recognized_text = recognized_text
-                    recognized_text_list.append(recognized_text)
+                    lines = recognized_text.split('\n')
+                    for line in lines:
+                        line = line.strip()
+                        if line:
+                            now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                            filename = f"voice_{now}.wav"
+                            local_path = save_wav(filename, recorded_frames)
+                            upload_to_aws(local_path, filename)
 
-                    now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"voice_{now}.wav"
-                    recognized_filenames.append(filename)
-
-                    save_to_mysql(recognized_text)
-                    local_path = save_wav(filename, recorded_frames)
-                    upload_to_aws(local_path, filename)
+                            save_to_mysql(line, filename)
+                            recognized_text_list.append(line)
+                            recognized_filenames.append(filename)
 
                     recorded_frames.clear()
 
@@ -186,11 +189,18 @@ def stop_recognition():
         if p:
             p.terminate()
         print("🔴 인식 종료됨")
-
-def get_last_result():
-    return '\n'.join(recognized_text_list)
+        clear_results()
 
 def clear_results():
     global recognized_text_list, recognized_filenames
     recognized_text_list.clear()
     recognized_filenames.clear()
+
+def get_last_result():
+    return '\n'.join(recognized_text_list)
+
+def get_results_with_audio():
+    return [
+        {"text": t, "filename": f}
+        for t, f in zip(recognized_text_list, recognized_filenames)
+    ]

@@ -1,4 +1,4 @@
-# voicerecog.py
+#voicerecog.py 
 
 import pyaudio
 import queue
@@ -11,6 +11,7 @@ from google.cloud import speech
 import mysql.connector
 from dotenv import load_dotenv
 import paramiko
+import requests
 
 load_dotenv()
 
@@ -24,9 +25,9 @@ db_config = {
 }
 
 # AWS 접속 정보
-AWS_HOST = os.getenv("AWS_HOST")
-AWS_USER = os.getenv("AWS_USER")
-AWS_PASSWORD = os.getenv("AWS_PASSWORD")
+AWS_HOST = os.getenv("AWS_HOST", "").strip()
+AWS_USER = os.getenv("AWS_USER", "").strip()
+AWS_PASSWORD = os.getenv("AWS_PASSWORD", "").strip()
 REMOTE_DIR = "/home/ec2-user/voiceapi/recogaudio/"
 
 client = speech.SpeechClient()
@@ -58,15 +59,16 @@ def save_to_mysql(text, filename):
             datetime.datetime.now(),
             0,
             0,
-            filename
+            'TESTDATA'  # ← 여기만 수정됨
         ))
         conn.commit()
-        print("\U0001F4CC MYSQL 저장 완료:", text, filename)
+        print("✅ MYSQL 저장 완료:", text, "→ TESTDATA")
     except mysql.connector.Error as err:
         print("❌ MySQL 저장 오류:", err)
     finally:
         if cursor: cursor.close()
         if conn: conn.close()
+
 
 def save_wav(filename, frames):
     temp_dir = "/tmp"
@@ -100,11 +102,11 @@ def callback(in_data, frame_count, time_info, status):
     volume_norm = np.linalg.norm(audio_data) / len(audio_data)
 
     if volume_norm <= 0.02:
-        last_feedback_message = "목소리가 너무 작아요."
+        last_feedback_message = "목소리가 너무 작아요. 😮‍💨"
     elif volume_norm >= 0.3:
-        last_feedback_message = "목소리가 너무 커요."
+        last_feedback_message = "목소리가 너무 커요. 😲"
     else:
-        last_feedback_message = "Good! 잘 하고 있어요."
+        last_feedback_message = "Good! 잘 하고 있어요. 😄👌"
 
     if volume_norm > VOLUME_THRESHOLD:
         audio_queue.put(in_data)
@@ -147,7 +149,7 @@ def recognize_stream():
             for result in response.results:
                 if result.is_final:
                     recognized_text = result.alternatives[0].transcript.strip()
-                    if not recognized_text:
+                    if not recognized_text or len(recorded_frames) < 3:
                         recorded_frames.clear()
                         continue
 
@@ -189,10 +191,34 @@ def stop_recognition():
         if p:
             p.terminate()
         print("🔴 인식 종료됨")
-        clear_results()
+        # ✅ clear_results()는 더 이상 여기서 호출하지 않음
 
 def clear_results():
     global recognized_text_list, recognized_filenames
+    print("🧹 clear_results() 호출됨")
+
+    try:
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(hostname=AWS_HOST, username=AWS_USER, password=AWS_PASSWORD)
+        sftp = ssh.open_sftp()
+
+        for filename in recognized_filenames:
+            remote_path = os.path.join(REMOTE_DIR, filename)
+            try:
+                sftp.remove(remote_path)
+                print(f"🗑️ EC2 삭제 성공: {remote_path}")
+            except FileNotFoundError:
+                print(f"🚫 파일 없음: {remote_path}")
+            except Exception as e:
+                print(f"❌ EC2 삭제 실패: {remote_path}, 에러: {e}")
+
+        sftp.close()
+        ssh.close()
+
+    except Exception as e:
+        print(f"❌ EC2 연결 실패: {e}")
+
     recognized_text_list.clear()
     recognized_filenames.clear()
 

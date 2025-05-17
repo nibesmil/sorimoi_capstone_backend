@@ -221,7 +221,13 @@ def clear_results():
 
     recognized_text_list.clear()
     recognized_filenames.clear()
-
+    
+def clear_text_only():
+    global recognized_text_list, recognized_filenames
+    recognized_text_list.clear()
+    recognized_filenames.clear()
+    print("✅ 텍스트만 초기화 완료 (clear_text_only)")
+    
 def get_last_result():
     return '\n'.join(recognized_text_list)
 

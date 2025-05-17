@@ -1,4 +1,4 @@
-#ecec.py
+#eecc.py
 
 import os
 import glob
@@ -59,6 +59,14 @@ def serve_audio(filename):
         mimetype=mime,
         as_attachment=False
     )
+    
+@app.route("/clear_text", methods=["POST"])
+def clear_text_only():
+    recognized_text_list.clear()
+    recognized_filenames.clear()
+    print("🧹 EC2 서버 텍스트만 초기화 완료")
+    return jsonify({"status": "text_cleared"}), 200
+
 
 @app.route("/clear_results", methods=["POST"])
 def clear_results():

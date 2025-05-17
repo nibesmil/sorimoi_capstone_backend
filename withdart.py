@@ -64,6 +64,11 @@ def clear_result():
     voicerecog.clear_results()
     return jsonify({"status": "cleared"}), 200
 
+@app.route('/clear_text', methods=['POST'])
+def clear_text_only():
+    voicerecog.clear_text_only()
+    return jsonify({"status": "text_cleared"}), 200
+
 if __name__ == '__main__':
     app.logger.setLevel("DEBUG")
     print("🚀 Flask 음성 인식 서버 실행 중... (http://0.0.0.0:5000)")

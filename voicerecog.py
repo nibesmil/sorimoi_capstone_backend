@@ -1,5 +1,3 @@
-#voicerecog.py 
-
 import pyaudio
 import queue
 import threading
@@ -15,7 +13,6 @@ import requests
 
 load_dotenv()
 
-# MySQL 설정
 db_config = {
     "host": os.getenv("DB_HOST"),
     "user": os.getenv("DB_USER"),
@@ -24,7 +21,6 @@ db_config = {
     "port": 3306
 }
 
-# AWS 접속 정보
 AWS_HOST = os.getenv("AWS_HOST", "").strip()
 AWS_USER = os.getenv("AWS_USER", "").strip()
 AWS_PASSWORD = os.getenv("AWS_PASSWORD", "").strip()
@@ -34,7 +30,6 @@ client = speech.SpeechClient()
 RATE = 16000
 CHUNK = int(RATE / 10)
 
-# 상태 변수
 audio_queue = queue.Queue()
 recorded_frames = []
 is_listening = False
@@ -59,16 +54,15 @@ def save_to_mysql(text, filename):
             datetime.datetime.now(),
             0,
             0,
-            'TESTDATA'  # ← 여기만 수정됨
+            'TESTDATA'
         ))
         conn.commit()
-        print("✅ MYSQL 저장 완료:", text, "→ TESTDATA")
+        print("✅ MYSQL 저장 완료:", text)
     except mysql.connector.Error as err:
         print("❌ MySQL 저장 오류:", err)
     finally:
         if cursor: cursor.close()
         if conn: conn.close()
-
 
 def save_wav(filename, frames):
     temp_dir = "/tmp"
@@ -89,7 +83,7 @@ def upload_to_aws(local_path, filename):
         sftp = ssh.open_sftp()
         remote_path = os.path.join(REMOTE_DIR, filename)
         sftp.put(local_path, remote_path)
-        print(f"\U0001F680 업로드 성공: {remote_path}")
+        print(f"🚀 업로드 성공: {remote_path}")
         sftp.close()
         ssh.close()
         os.remove(local_path)
@@ -124,7 +118,7 @@ def recognize_stream():
         frames_per_buffer=CHUNK,
         stream_callback=callback
     )
-    print("\U0001F3A4 인식 중...")
+    print("🎤 인식 중...")
 
     def generator():
         while is_listening:
@@ -153,18 +147,27 @@ def recognize_stream():
                         recorded_frames.clear()
                         continue
 
-                    lines = recognized_text.split('\n')
-                    for line in lines:
-                        line = line.strip()
-                        if line:
-                            now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                            filename = f"voice_{now}.wav"
-                            local_path = save_wav(filename, recorded_frames)
-                            upload_to_aws(local_path, filename)
+                    line = recognized_text.strip()
+                    if line:
+                        now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                        filename = f"voice_{now}.wav"
+                        local_path = save_wav(filename, recorded_frames)
+                        upload_to_aws(local_path, filename)
 
-                            save_to_mysql(line, filename)
-                            recognized_text_list.append(line)
-                            recognized_filenames.append(filename)
+                        save_to_mysql(line, filename)
+
+                        try:
+                            requests.post(
+                                "http://43.200.24.193:8000/upload_text",
+                                json={"text": line, "filename": filename},
+                                timeout=2
+                            )
+                            print(f"📤 EC2 업로드 완료: {filename}")
+                        except Exception as e:
+                            print(f"❌ EC2 업로드 실패: {e}")
+
+                        recognized_text_list.append(line)
+                        recognized_filenames.append(filename)
 
                     recorded_frames.clear()
 
@@ -191,43 +194,34 @@ def stop_recognition():
         if p:
             p.terminate()
         print("🔴 인식 종료됨")
-        # ✅ clear_results()는 더 이상 여기서 호출하지 않음
 
 def clear_results():
     global recognized_text_list, recognized_filenames
     print("🧹 clear_results() 호출됨")
-
     try:
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         ssh.connect(hostname=AWS_HOST, username=AWS_USER, password=AWS_PASSWORD)
         sftp = ssh.open_sftp()
-
         for filename in recognized_filenames:
             remote_path = os.path.join(REMOTE_DIR, filename)
             try:
                 sftp.remove(remote_path)
-                print(f"🗑️ EC2 삭제 성공: {remote_path}")
-            except FileNotFoundError:
-                print(f"🚫 파일 없음: {remote_path}")
-            except Exception as e:
-                print(f"❌ EC2 삭제 실패: {remote_path}, 에러: {e}")
-
+                print(f"🗑️ 삭제됨: {remote_path}")
+            except:
+                pass
         sftp.close()
         ssh.close()
-
     except Exception as e:
         print(f"❌ EC2 연결 실패: {e}")
+    recognized_text_list.clear()
+    recognized_filenames.clear()
 
-    recognized_text_list.clear()
-    recognized_filenames.clear()
-    
 def clear_text_only():
-    global recognized_text_list, recognized_filenames
     recognized_text_list.clear()
     recognized_filenames.clear()
-    print("✅ 텍스트만 초기화 완료 (clear_text_only)")
-    
+    print("✅ 텍스트만 초기화 완료")
+
 def get_last_result():
     return '\n'.join(recognized_text_list)
 

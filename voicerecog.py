@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 import paramiko
 import requests
 
+from scorelogic import GPTScoringService
+
 load_dotenv()
 
 db_config = {
@@ -38,10 +40,26 @@ p = None
 last_feedback_message = ""
 recognized_text_list = []
 recognized_filenames = []
+recognized_scores = []
 
 VOLUME_THRESHOLD = 0.01
+gpt = GPTScoringService()
 
-def save_to_mysql(text, filename):
+# ✅ 단어 정렬 기반 중복 비교용
+def normalize_text(text: str) -> str:
+    words = text.lower().strip().split()
+    return ' '.join(sorted(words))
+
+# ✅ 모든 이전 문장을 합친 결과인지 확인
+def is_combined_result(current: str, prev_list: list) -> bool:
+    if not prev_list:
+        return False
+    norm_current = normalize_text(current)
+    joined = ' '.join(prev_list)
+    norm_joined = normalize_text(joined)
+    return norm_current == norm_joined
+
+def save_to_mysql(text, filename, score=0):
     try:
         conn = mysql.connector.connect(**db_config)
         cursor = conn.cursor()
@@ -52,7 +70,7 @@ def save_to_mysql(text, filename):
         cursor.execute(query, (
             text,
             datetime.datetime.now(),
-            0,
+            score,
             0,
             'TESTDATA'
         ))
@@ -148,27 +166,41 @@ def recognize_stream():
                         continue
 
                     line = recognized_text.strip()
-                    if line:
-                        now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                        filename = f"voice_{now}.wav"
-                        local_path = save_wav(filename, recorded_frames)
-                        upload_to_aws(local_path, filename)
+                    normalized_line = normalize_text(line)
 
-                        save_to_mysql(line, filename)
+                    # ✅ 기존 중복 필터
+                    if any(normalized_line == normalize_text(prev) for prev in recognized_text_list):
+                        print(f"⚠️ 중복 문장 무시됨: {line}")
+                        recorded_frames.clear()
+                        continue
 
-                        try:
-                            requests.post(
-                                "http://43.200.24.193:8000/upload_text",
-                                json={"text": line, "filename": filename},
-                                timeout=2
-                            )
-                            print(f"📤 EC2 업로드 완료: {filename}")
-                        except Exception as e:
-                            print(f"❌ EC2 업로드 실패: {e}")
+                    # ✅ 모든 이전 문장을 합친 결과일 경우 무시
+                    if is_combined_result(line, recognized_text_list):
+                        print(f"⚠️ 마지막 조합 문장 무시됨: {line}")
+                        recorded_frames.clear()
+                        continue
 
-                        recognized_text_list.append(line)
-                        recognized_filenames.append(filename)
+                    now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                    filename = f"voice_{now}.wav"
+                    local_path = save_wav(filename, recorded_frames)
+                    upload_to_aws(local_path, filename)
 
+                    score = gpt.evaluate(line, filename)
+                    save_to_mysql(line, filename, score)
+
+                    try:
+                        requests.post(
+                            "http://43.200.24.193:8000/upload_text",
+                            json={"text": line, "filename": filename, "score": score},
+                            timeout=2
+                        )
+                        print(f"📤 EC2 업로드 완료: {filename}")
+                    except Exception as e:
+                        print(f"❌ EC2 업로드 실패: {e}")
+
+                    recognized_text_list.append(line)
+                    recognized_filenames.append(filename)
+                    recognized_scores.append(score)
                     recorded_frames.clear()
 
                 if not is_listening:
@@ -196,7 +228,7 @@ def stop_recognition():
         print("🔴 인식 종료됨")
 
 def clear_results():
-    global recognized_text_list, recognized_filenames
+    global recognized_text_list, recognized_filenames, recognized_scores
     print("🧹 clear_results() 호출됨")
     try:
         ssh = paramiko.SSHClient()
@@ -216,10 +248,12 @@ def clear_results():
         print(f"❌ EC2 연결 실패: {e}")
     recognized_text_list.clear()
     recognized_filenames.clear()
+    recognized_scores.clear()
 
 def clear_text_only():
     recognized_text_list.clear()
     recognized_filenames.clear()
+    recognized_scores.clear()
     print("✅ 텍스트만 초기화 완료")
 
 def get_last_result():
@@ -227,6 +261,6 @@ def get_last_result():
 
 def get_results_with_audio():
     return [
-        {"text": t, "filename": f}
-        for t, f in zip(recognized_text_list, recognized_filenames)
+        {"text": t, "filename": f, "score": s}
+        for t, f, s in zip(recognized_text_list, recognized_filenames, recognized_scores)
     ]

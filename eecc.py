@@ -1,3 +1,6 @@
+# eecc.py
+# nohup python eecc.py > output.log 2>&1 &
+
 import os
 import glob
 from flask import Flask, jsonify, send_from_directory, abort, request
@@ -12,12 +15,15 @@ CORS(app)
 AUDIO_DIR = "/home/ec2-user/voiceapi/recogaudio"
 recognized_text_list = []
 recognized_filenames = []
+recognized_scores = []  # ✅ 점수 리스트 추가
 
 @app.route("/upload_text", methods=["POST"])
 def upload_text():
     data = request.get_json()
     text = data.get("text")
     filename = data.get("filename")
+    score = data.get("score", 0)  # ✅ 점수도 받음
+
     if text and filename:
         if text in recognized_text_list and filename in recognized_filenames:
             print(f"⚠️ 중복 무시: '{text}' / {filename}")
@@ -25,15 +31,16 @@ def upload_text():
 
         recognized_text_list.append(text)
         recognized_filenames.append(filename)
-        print(f"✅ 저장된 문장: '{text}' → {filename}")
+        recognized_scores.append(score)  # ✅ 점수 저장
+        print(f"✅ 저장된 문장: '{text}' → {filename} (점수: {score})")
         return jsonify({"status": "ok"}), 200
     return jsonify({"error": "Missing text or filename"}), 400
 
 @app.route("/result_with_audio", methods=["GET"])
 def get_results_with_audio():
     return jsonify([
-        {"text": t, "filename": f}
-        for t, f in zip(recognized_text_list, recognized_filenames)
+        {"text": t, "filename": f, "score": s}
+        for t, f, s in zip(recognized_text_list, recognized_filenames, recognized_scores)
     ])
 
 @app.route("/audio/<filename>", methods=["GET"])
@@ -49,6 +56,7 @@ def serve_audio(filename):
 def clear_text_only():
     recognized_text_list.clear()
     recognized_filenames.clear()
+    recognized_scores.clear()  # ✅ 점수도 초기화
     print("🧹 텍스트만 초기화 완료")
     return jsonify({"status": "text_cleared"}), 200
 
@@ -56,6 +64,7 @@ def clear_text_only():
 def clear_results():
     recognized_text_list.clear()
     recognized_filenames.clear()
+    recognized_scores.clear()
     print("🧹 전체 초기화 및 파일 삭제")
     try:
         for filepath in glob.glob(os.path.join(AUDIO_DIR, "voice_*.wav")):

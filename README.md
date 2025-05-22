@@ -1,2 +1,2 @@
-# sorimoi_capstone_backend
-2025 호서대학교 컴퓨터공학부 졸업프로젝트
+# voicevoicevoice
+음성 인식 로직 연습용
